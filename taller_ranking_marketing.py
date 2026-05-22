@@ -147,6 +147,81 @@ def read_excel_uploaded(uploaded_file) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+
+def prepare_mapeo_mediadores(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepara MAPEO_MEDIADORES para enriquecer el ranking por agente/mediador."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["CODIGO", "NOMBRE_AGENCIA", "PROVINCIA", "RESPONSABLE"])
+
+    cod_col = require_column(df, ("CODIMEDI", "MEDIADOR", "CODIGO", "CODIGO MEDIADOR"), "CODIMEDI")
+    nombre_col = find_column(
+        df,
+        (
+            "NOMBCOME",
+            "NOMBRE AGENCIA",
+            "NOMBRE_AGENCIA",
+            "AGENCIA",
+            "NOMBRE MEDIADOR",
+            "MEDIADOR NOMBRE",
+            "NOMBRE",
+        ),
+    )
+    provincia_col = find_column(df, ("PROVINCIA", "POBLACION", "POBLACIÓN", "LOCALIDAD"))
+    responsable_col = find_column(df, ("RESPONSABLE", "Responsable"))
+
+    work = df.copy()
+    result = pd.DataFrame()
+    result["CODIGO"] = work[cod_col].apply(lambda x: normalize_text(x, "Sin mediador"))
+    result["NOMBRE_AGENCIA"] = (
+        work[nombre_col].apply(lambda x: normalize_text(x, ""))
+        if nombre_col
+        else ""
+    )
+    result["PROVINCIA"] = (
+        work[provincia_col].apply(lambda x: normalize_text(x, ""))
+        if provincia_col
+        else ""
+    )
+    result["RESPONSABLE"] = (
+        work[responsable_col].apply(lambda x: normalize_text(x, ""))
+        if responsable_col
+        else ""
+    )
+
+    result = result.drop_duplicates("CODIGO")
+    return result
+
+
+def add_mapeo_to_ranking_agente(ranking: pd.DataFrame, mapeo_df: pd.DataFrame | None) -> pd.DataFrame:
+    """Añade nombre de agencia, provincia/población y responsable al ranking por mediador."""
+    if ranking.empty or mapeo_df is None or mapeo_df.empty:
+        return ranking.copy()
+
+    mapeo = prepare_mapeo_mediadores(mapeo_df)
+    if mapeo.empty:
+        return ranking.copy()
+
+    result = ranking.copy()
+    result = pd.merge(result, mapeo, on="CODIGO", how="left")
+
+    # Si no hay nombre en el mapeo, mantenemos el codigo como nombre.
+    result["NOMBRE"] = [
+        nombre_agencia if not pd.isna(nombre_agencia) and str(nombre_agencia).strip() else nombre_original
+        for nombre_agencia, nombre_original in zip(result["NOMBRE_AGENCIA"], result["NOMBRE"])
+    ]
+
+    result["PROVINCIA"] = result["PROVINCIA"].fillna("")
+    result["RESPONSABLE"] = result["RESPONSABLE"].fillna("")
+    result = result.drop(columns=["NOMBRE_AGENCIA"], errors="ignore")
+
+    ordered = [
+        col for col in ["CODIGO", "NOMBRE", "PROVINCIA", "RESPONSABLE"]
+        if col in result.columns
+    ]
+    rest = [col for col in result.columns if col not in ordered]
+    return result[ordered + rest]
+
+
 def available_date_columns(df: pd.DataFrame) -> list[str]:
     priority = [
         "FECHA GRABACION",
@@ -389,6 +464,7 @@ def build_ranking(
     facturacion_df: pd.DataFrame,
     anulaciones_df: pd.DataFrame,
     facturacion_asesor_df: pd.DataFrame | None,
+    mapeo_df: pd.DataFrame | None,
     ranking_por: str,
     date_column: str,
     fecha_desde: date,
@@ -504,6 +580,9 @@ def build_ranking(
         for baja, alta in zip(ranking["FACTURACION_ANULADA"], ranking["FACTURACION_BRUTA"])
     ]
 
+    if ranking_por == "Agente / mediador":
+        ranking = add_mapeo_to_ranking_agente(ranking, mapeo_df)
+
     ranking = ranking.sort_values(metric, ascending=False).reset_index(drop=True)
     ranking.insert(0, "POSICION", range(1, len(ranking) + 1))
 
@@ -554,6 +633,10 @@ with st.sidebar:
         "FACTURACION_DECESOS_ASESOR (solo si ranking por asesor)",
         type=["xls", "xlsx", "xlsm"],
     )
+    mapeo_file = st.file_uploader(
+        "MAPEO_MEDIADORES (opcional, para nombre/provincia)",
+        type=["xls", "xlsx", "xlsm"],
+    )
 
     st.header("2. Ranking")
     ranking_por = st.radio(
@@ -570,6 +653,7 @@ try:
     facturacion_df = read_excel_uploaded(facturacion_file)
     anulaciones_df = read_excel_uploaded(anulaciones_file)
     facturacion_asesor_df = read_excel_uploaded(facturacion_asesor_file) if facturacion_asesor_file else pd.DataFrame()
+    mapeo_df = read_excel_uploaded(mapeo_file) if mapeo_file else pd.DataFrame()
 except ImportError as error:
     st.error("Falta una librería para leer Excel antiguo .xls. Instala dependencias con: pip install xlrd openpyxl")
     st.exception(error)
@@ -705,6 +789,7 @@ if submitted:
             facturacion_df=facturacion_df,
             anulaciones_df=anulaciones_df,
             facturacion_asesor_df=facturacion_asesor_df,
+            mapeo_df=mapeo_df,
             ranking_por=ranking_por,
             date_column=date_column,
             fecha_desde=fecha_desde,
@@ -742,6 +827,7 @@ if submitted:
 
         parametros = {
             "ranking_por": ranking_por,
+            "mapeo_mediadores": "Aplicado" if not mapeo_df.empty else "No aplicado",
             "fecha_columna_rango": date_column,
             "fecha_desde": fecha_desde.strftime("%d/%m/%Y"),
             "fecha_hasta": fecha_hasta.strftime("%d/%m/%Y"),
