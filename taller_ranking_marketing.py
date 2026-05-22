@@ -541,16 +541,17 @@ with st.form("ranking_form"):
             help="Este tope se aplica siempre sobre POLIEFECT/POLIEFEC, aunque el rango use GRABACION o POLIALTA.",
         )
     with c3:
-        fecha_efecto_maxima = st.date_input(
+        fecha_efecto_maxima_text = st.text_input(
             "Fecha efecto máxima (POLIEFECT)",
-            value=date(fecha_hasta.year, 12, 31),
-            min_value=date(2000, 1, 1),
-            max_value=date(2100, 12, 31),
-            format="DD/MM/YYYY",
+            value=f"31/12/{fecha_hasta.year}",
             disabled=not usar_fecha_efecto_maxima,
-            key="fecha_efecto_maxima",
+            help="Formato DD/MM/AAAA. Ejemplo: 01/07/2026",
         )
-        excluded_products_text = st.text_input("Productos excluidos", value=DEFAULT_EXCLUDED_PRODUCTS)
+
+        excluded_products_text = st.text_input(
+            "Productos excluidos",
+            value=DEFAULT_EXCLUDED_PRODUCTS,
+        )
 
     c4, c5, c6 = st.columns(3)
     with c4:
