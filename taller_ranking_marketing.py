@@ -176,13 +176,17 @@ def prepare_facturacion_mediador(df: pd.DataFrame, date_column: str) -> pd.DataF
     # Fecha de efecto / entrada en vigor de la poliza.
     # En esta app la fecha de efecto SIEMPRE es POLIALTA,
     # aunque el rango del ranking se filtre por FECHA_GRABACION u otra fecha.
+    poliefect_col = require_column(
+        df,
+        ("POLIEFECT", "POLIEFEC", "FECHA EFECTO"),
+        "POLIEFECT",
+    )
+
     work["FECHA_EFECTO"] = pd.to_datetime(
-        work[polialta_col],
+        work[poliefect_col],
         dayfirst=True,
         errors="coerce",
     )
-    work["PRIMA_NETA_VALOR"] = work[prima_col].apply(parse_spanish_number)
-    return work
 
 
 def prepare_facturacion_asesor(df: pd.DataFrame, date_column: str) -> pd.DataFrame:
