@@ -543,9 +543,12 @@ with st.form("ranking_form"):
     with c3:
         fecha_efecto_maxima = st.date_input(
             "Fecha efecto máxima (POLIEFECT)",
-            value=fecha_hasta,
+            value=date(fecha_hasta.year, 12, 31),
+            min_value=date(2000, 1, 1),
+            max_value=date(2100, 12, 31),
             format="DD/MM/YYYY",
             disabled=not usar_fecha_efecto_maxima,
+            key="fecha_efecto_maxima",
         )
         excluded_products_text = st.text_input("Productos excluidos", value=DEFAULT_EXCLUDED_PRODUCTS)
 
