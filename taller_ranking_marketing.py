@@ -133,6 +133,8 @@ def available_date_columns(df: pd.DataFrame) -> list[str]:
     priority = [
         "FECHA GRABACION",
         "FECHA_GRABACION",
+        "GRABACION",
+        "GRABACION_INICIAL",
         "FECGRABA",
         "POLIALTA",
         "FECHA ALTA",
