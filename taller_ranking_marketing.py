@@ -10,7 +10,10 @@ import streamlit as st
 
 
 DEFAULT_EXCLUDED_PRODUCTS = "D600, D460"
-DEFAULT_EXCLUDED_ASESOR_CODES = "28005, 34400, 29403, 105-0000, 48400, 08417-001, 11013, 436, 110-G010, Sin codigo, Sin codigo red"
+DEFAULT_EXCLUDED_ASESOR_CODES = (
+    "28005, 34400, 29403, 105-0000, 48400, 08417-001, "
+    "11013, 436, 110-G010, Sin codigo, Sin codigo red"
+)
 DEFAULT_EXCLUDED_ASESOR_PREFIXES = "100-"
 
 MONEY_COLUMNS = {
@@ -110,6 +113,14 @@ def split_csv(text: str) -> list[str]:
     return [item.strip() for item in str(text).split(",") if item.strip()]
 
 
+def format_euro(value: float) -> str:
+    return f"{float(value):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def format_percent(value: float) -> str:
+    return f"{float(value):.2%}".replace(".", ",")
+
+
 @st.cache_data(show_spinner=False)
 def read_excel_uploaded(uploaded_file) -> pd.DataFrame:
     if uploaded_file is None:
@@ -137,9 +148,10 @@ def available_date_columns(df: pd.DataFrame) -> list[str]:
         "GRABACION_INICIAL",
         "FECGRABA",
         "POLIALTA",
-        "FECHA ALTA",
-        "FECHA EFECTO",
+        "POLIEFECT",
         "POLIEFEC",
+        "FECHA EFECTO",
+        "FECHA ALTA",
     ]
     found = []
     for candidate in priority:
@@ -149,10 +161,25 @@ def available_date_columns(df: pd.DataFrame) -> list[str]:
 
     for col in df.columns:
         key = normalize_column_key(col)
-        if ("FECHA" in key or "FEC" in key or key == "POLIALTA") and col not in found:
+        if (
+            "FECHA" in key
+            or "FEC" in key
+            or "GRABACION" in key
+            or key in {"POLIALTA", "POLIEFECT", "POLIEFEC"}
+        ) and col not in found:
             found.append(col)
 
     return found
+
+
+def get_effect_column(df: pd.DataFrame) -> str:
+    # Fecha efecto maxima: SIEMPRE se usa POLIEFECT/POLIEFEC.
+    # POLIALTA puede elegirse como fecha de rango, pero no como tope de efecto.
+    return require_column(
+        df,
+        ("POLIEFECT", "POLIEFEC", "FECHA EFECTO"),
+        "POLIEFECT / POLIEFEC / FECHA EFECTO",
+    )
 
 
 # ============================================================
@@ -165,28 +192,22 @@ def prepare_facturacion_mediador(df: pd.DataFrame, date_column: str) -> pd.DataF
     poliza_col = require_column(df, ("POLIZA",), "POLIZA")
     mediador_col = require_column(df, ("MEDIADOR", "CODIMEDI", "AGENTE"), "MEDIADOR / CODIMEDI")
     prima_col = require_column(df, ("PRIMA NETA", "PRIMA_NETA", "PRIMA NE"), "PRIMA NETA")
-    polialta_col = require_column(df, ("POLIALTA", "FECHA ALTA"), "POLIALTA")
+    effect_col = get_effect_column(df)
 
     work = df.copy()
     work["PRODUCTO_NORMALIZADO"] = work[producto_col].apply(normalize_product)
     work["POLIZA_NORMALIZADA"] = work[poliza_col].apply(normalize_policy)
     work["CODIGO"] = work[mediador_col].apply(lambda x: normalize_text(x, "Sin mediador"))
     work["NOMBRE"] = work["CODIGO"]
-    work["FECHA_RANKING"] = pd.to_datetime(work[date_column], dayfirst=True, errors="coerce")
-    # Fecha de efecto / entrada en vigor de la poliza.
-    # En esta app la fecha de efecto SIEMPRE es POLIALTA,
-    # aunque el rango del ranking se filtre por FECHA_GRABACION u otra fecha.
-    poliefect_col = require_column(
-        df,
-        ("POLIEFECT", "POLIEFEC", "FECHA EFECTO"),
-        "POLIEFECT",
-    )
 
-    work["FECHA_EFECTO"] = pd.to_datetime(
-        work[poliefect_col],
-        dayfirst=True,
-        errors="coerce",
-    )
+    # Fecha del rango: la selecciona el usuario.
+    work["FECHA_RANKING"] = pd.to_datetime(work[date_column], dayfirst=True, errors="coerce")
+
+    # Tope independiente de efecto: SIEMPRE POLIEFECT/POLIEFEC.
+    work["FECHA_EFECTO"] = pd.to_datetime(work[effect_col], dayfirst=True, errors="coerce")
+
+    work["PRIMA_NETA_VALOR"] = work[prima_col].apply(parse_spanish_number)
+    return work
 
 
 def prepare_facturacion_asesor(df: pd.DataFrame, date_column: str) -> pd.DataFrame:
@@ -199,22 +220,20 @@ def prepare_facturacion_asesor(df: pd.DataFrame, date_column: str) -> pd.DataFra
     )
     comercial_col = require_column(df, ("COMERCIAL", "ASESOR"), "COMERCIAL")
     prima_col = require_column(df, ("PRIMA NETA", "PRIMA_NETA", "PRIMA NE"), "PRIMA NETA")
-    polialta_col = require_column(df, ("POLIALTA", "FECHA ALTA"), "POLIALTA")
+    effect_col = get_effect_column(df)
 
     work = df.copy()
     work["PRODUCTO_NORMALIZADO"] = work[producto_col].apply(normalize_product)
     work["POLIZA_NORMALIZADA"] = work[poliza_col].apply(normalize_policy)
     work["CODIGO"] = work[codigo_col].apply(lambda x: normalize_text(x, "Sin codigo red"))
     work["NOMBRE"] = work[comercial_col].apply(lambda x: normalize_text(x, "Sin asesor"))
+
+    # Fecha del rango: la selecciona el usuario.
     work["FECHA_RANKING"] = pd.to_datetime(work[date_column], dayfirst=True, errors="coerce")
-    # Fecha de efecto / entrada en vigor de la poliza.
-    # En esta app la fecha de efecto SIEMPRE es POLIALTA,
-    # aunque el rango del ranking se filtre por FECHA_GRABACION u otra fecha.
-    work["FECHA_EFECTO"] = pd.to_datetime(
-        work[polialta_col],
-        dayfirst=True,
-        errors="coerce",
-    )
+
+    # Tope independiente de efecto: SIEMPRE POLIEFECT/POLIEFEC.
+    work["FECHA_EFECTO"] = pd.to_datetime(work[effect_col], dayfirst=True, errors="coerce")
+
     work["PRIMA_NETA_VALOR"] = work[prima_col].apply(parse_spanish_number)
     return work
 
@@ -256,7 +275,11 @@ def filter_base(
     )
 
     if fecha_efecto_maxima is not None:
-        mask = mask & df["FECHA_EFECTO"].notna() & df["FECHA_EFECTO"].dt.date.le(fecha_efecto_maxima)
+        mask = (
+            mask
+            & df["FECHA_EFECTO"].notna()
+            & df["FECHA_EFECTO"].dt.date.le(fecha_efecto_maxima)
+        )
 
     return df[mask].copy()
 
@@ -355,6 +378,7 @@ def build_ranking(
 
     anulaciones_prepared = prepare_anulaciones(anulaciones_df)
 
+    # ALTAS: se filtran por fecha del ranking seleccionada y opcionalmente por tope POLIEFECT.
     altas_detail = filter_base(
         altas_prepared,
         fecha_desde,
@@ -363,6 +387,7 @@ def build_ranking(
         fecha_efecto_maxima,
     )
 
+    # ANULACIONES: se filtran por FECHA EMISION entre fecha_desde y fecha_hasta.
     anulaciones_detail_base = filter_anulaciones(
         anulaciones_prepared,
         fecha_desde,
@@ -372,6 +397,7 @@ def build_ranking(
     )
 
     if ranking_por == "Asesor / comercial":
+        # Para imputar bajas a asesor cruzamos por POLIZA contra FACTURACION_DECESOS_ASESOR.
         lookup = altas_prepared[["POLIZA_NORMALIZADA", "CODIGO", "NOMBRE", "FECHA_EFECTO"]].copy()
         if solo_bajas_altas_mismo_anio:
             lookup = lookup[lookup["FECHA_EFECTO"].dt.year == fecha_hasta.year]
@@ -425,9 +451,9 @@ def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for col in out.columns:
         if col in MONEY_COLUMNS:
-            out[col] = out[col].apply(lambda x: f"{float(x):,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
+            out[col] = out[col].apply(format_euro)
         elif col in PERCENT_COLUMNS:
-            out[col] = out[col].apply(lambda x: f"{float(x):.2%}".replace(".", ","))
+            out[col] = out[col].apply(format_percent)
     return out
 
 
@@ -448,13 +474,19 @@ def to_excel_bytes(ranking: pd.DataFrame, altas: pd.DataFrame, anulaciones: pd.D
 
 st.set_page_config(page_title="Ranking personalizado Decesos", layout="wide")
 st.title("Ranking personalizado Decesos")
-st.caption("Constructor flexible para generar rankings por agente o asesor usando facturación y anulaciones de Decesos.")
+st.caption(
+    "Constructor flexible para generar rankings por agente o asesor usando facturación y anulaciones de Decesos. "
+    "El rango se calcula con la fecha que selecciones y el tope de efecto se calcula siempre con POLIEFECT/POLIEFEC."
+)
 
 with st.sidebar:
     st.header("1. Archivos")
     facturacion_file = st.file_uploader("FACTURACION_DECESOS", type=["xls", "xlsx", "xlsm"])
     anulaciones_file = st.file_uploader("FACTURACION_ANULACIONES_DECESOS", type=["xls", "xlsx", "xlsm"])
-    facturacion_asesor_file = st.file_uploader("FACTURACION_DECESOS_ASESOR (solo si ranking por asesor)", type=["xls", "xlsx", "xlsm"])
+    facturacion_asesor_file = st.file_uploader(
+        "FACTURACION_DECESOS_ASESOR (solo si ranking por asesor)",
+        type=["xls", "xlsx", "xlsm"],
+    )
 
     st.header("2. Ranking")
     ranking_por = st.radio("¿Qué ranking quieres?", ["Agente / mediador", "Asesor / comercial"], horizontal=False)
@@ -468,7 +500,7 @@ try:
     anulaciones_df = read_excel_uploaded(anulaciones_file)
     facturacion_asesor_df = read_excel_uploaded(facturacion_asesor_file) if facturacion_asesor_file else pd.DataFrame()
 except ImportError as error:
-    st.error("Falta una librería para leer Excel antiguo .xls. Instala dependencias con: pip install -r requirements.txt")
+    st.error("Falta una librería para leer Excel antiguo .xls. Instala dependencias con: pip install xlrd openpyxl")
     st.exception(error)
     st.stop()
 except Exception as error:
@@ -482,8 +514,9 @@ if not date_cols:
     st.error("No encuentro columnas de fecha en el archivo de facturación.")
     st.stop()
 
+# Seleccion por defecto: GRABACION si existe; si no, FECHA_GRABACION; si no, POLIALTA.
 default_date_index = 0
-for preferred in ["POLIALTA", "FECHA GRABACION", "FECHA_GRABACION"]:
+for preferred in ["GRABACION", "FECHA GRABACION", "FECHA_GRABACION", "POLIALTA"]:
     found = find_column(source_for_dates, (preferred,))
     if found in date_cols:
         default_date_index = date_cols.index(found)
@@ -494,13 +527,26 @@ with st.form("ranking_form"):
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        date_column = st.selectbox("¿Qué fecha quieres usar para el rango?", date_cols, index=default_date_index)
+        date_column = st.selectbox(
+            "¿Qué fecha quieres usar para el rango del ranking?",
+            date_cols,
+            index=default_date_index,
+            help="Puedes usar GRABACION para pólizas grabadas, POLIALTA para altas, etc.",
+        )
         fecha_desde = st.date_input("Fecha desde", value=date(date.today().year, 1, 1), format="DD/MM/YYYY")
     with c2:
         fecha_hasta = st.date_input("Fecha hasta", value=date.today(), format="DD/MM/YYYY")
-        usar_fecha_efecto_maxima = st.checkbox("Fijar fecha de efecto máxima")
+        usar_fecha_efecto_maxima = st.checkbox(
+            "Fijar tope máximo de efecto",
+            help="Este tope se aplica siempre sobre POLIEFECT/POLIEFEC, aunque el rango use GRABACION o POLIALTA.",
+        )
     with c3:
-        fecha_efecto_maxima = st.date_input("Fecha efecto máxima", value=fecha_hasta, format="DD/MM/YYYY", disabled=not usar_fecha_efecto_maxima)
+        fecha_efecto_maxima = st.date_input(
+            "Fecha efecto máxima (POLIEFECT)",
+            value=fecha_hasta,
+            format="DD/MM/YYYY",
+            disabled=not usar_fecha_efecto_maxima,
+        )
         excluded_products_text = st.text_input("Productos excluidos", value=DEFAULT_EXCLUDED_PRODUCTS)
 
     c4, c5, c6 = st.columns(3)
@@ -520,12 +566,19 @@ with st.form("ranking_form"):
     with c5:
         excluir_defuncion_siniestro = st.checkbox("Excluir bajas por defunción / siniestro", value=True)
         solo_bajas_altas_mismo_anio = st.checkbox(
-            "En asesores: contar bajas solo si la póliza tuvo alta ese mismo año",
+            "En asesores: contar bajas solo si la póliza tuvo efecto ese mismo año",
             value=True,
         )
     with c6:
-        asesor_codes_text = st.text_area("Códigos excluidos en ranking asesor", value=DEFAULT_EXCLUDED_ASESOR_CODES, height=80)
-        asesor_prefixes_text = st.text_input("Prefijos excluidos en ranking asesor", value=DEFAULT_EXCLUDED_ASESOR_PREFIXES)
+        asesor_codes_text = st.text_area(
+            "Códigos excluidos en ranking asesor",
+            value=DEFAULT_EXCLUDED_ASESOR_CODES,
+            height=80,
+        )
+        asesor_prefixes_text = st.text_input(
+            "Prefijos excluidos en ranking asesor",
+            value=DEFAULT_EXCLUDED_ASESOR_PREFIXES,
+        )
 
     submitted = st.form_submit_button("Crear ranking")
 
@@ -563,12 +616,16 @@ if submitted:
 
         st.success(f"Ranking creado: {len(ranking)} filas")
 
+        total_grabadas = int(ranking["POLIZAS_GRABADAS"].sum()) if not ranking.empty else 0
+        total_anuladas = int(ranking["POLIZAS_ANULADAS"].sum()) if not ranking.empty else 0
+        total_neta = float(ranking["FACTURACION_NETA"].sum()) if not ranking.empty else 0.0
+        churn_total = total_anuladas / total_grabadas if total_grabadas else 0.0
+
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Facturación neta", f"{ranking['FACTURACION_NETA'].sum():,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".") if not ranking.empty else "0,00 €")
-        k2.metric("Pólizas grabadas", int(ranking["POLIZAS_GRABADAS"].sum()) if not ranking.empty else 0)
-        k3.metric("Pólizas anuladas", int(ranking["POLIZAS_ANULADAS"].sum()) if not ranking.empty else 0)
-        churn_total = ranking["POLIZAS_ANULADAS"].sum() / ranking["POLIZAS_GRABADAS"].sum() if not ranking.empty and ranking["POLIZAS_GRABADAS"].sum() else 0
-        k4.metric("Churn pólizas", f"{churn_total:.2%}".replace(".", ","))
+        k1.metric("Facturación neta", format_euro(total_neta))
+        k2.metric("Pólizas grabadas", total_grabadas)
+        k3.metric("Pólizas anuladas", total_anuladas)
+        k4.metric("Churn pólizas", format_percent(churn_total))
 
         st.subheader("Ranking")
         st.dataframe(format_for_display(ranking), use_container_width=True, hide_index=True)
@@ -581,10 +638,10 @@ if submitted:
 
         parametros = {
             "ranking_por": ranking_por,
-            "fecha_columna": date_column,
+            "fecha_columna_rango": date_column,
             "fecha_desde": fecha_desde.strftime("%d/%m/%Y"),
             "fecha_hasta": fecha_hasta.strftime("%d/%m/%Y"),
-            "fecha_efecto_maxima": fecha_efecto_maxima.strftime("%d/%m/%Y") if usar_fecha_efecto_maxima else "No aplicada",
+            "fecha_efecto_maxima_POLIEFECT": fecha_efecto_maxima.strftime("%d/%m/%Y") if usar_fecha_efecto_maxima else "No aplicada",
             "productos_excluidos": excluded_products_text,
             "ordenado_por": metric_label,
             "excluir_defuncion_siniestro": excluir_defuncion_siniestro,
